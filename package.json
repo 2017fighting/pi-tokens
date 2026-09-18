@@ -1,0 +1,59 @@
+{
+  "name": "pi-tokens",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "private": false,
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi",
+    "tokens",
+    "usage",
+    "cost"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/2017fighting/pi-tokens"
+  },
+  "pi": {
+    "extensions": [
+      "./src/extensions/command-tokens/index.ts"
+    ]
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@earendil-works/pi-tui": "0.85.1",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^25.0.10",
+    "eslint": "^10.6.0",
+    "globals": "^17.7.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "^8.63.0",
+    "vitest": "^4.0.18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src",
+    "lint:fix": "eslint src --fix",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  }
+}

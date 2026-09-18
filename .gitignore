@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+.security-scan/
+*.tgz
+.DS_Store
+
+# `src/lib` is package source. Global gitignore files commonly ignore `lib` as a
+# Python/build directory, which silently drops the aggregation library.
+!src/lib/
+!src/lib/**
