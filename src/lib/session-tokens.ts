@@ -9,7 +9,25 @@ export interface TokenBuckets {
   cacheRead: number;
   cacheWrite: number;
   totalTokens: number;
-  costTotal: number;
+}
+
+/**
+ * Tokens excluding cache reads and writes.
+ *
+ * On a cache-heavy workload `totalTokens` is dominated by cache reads, so this
+ * is the figure that reflects newly processed input plus generated output.
+ */
+export function nonCacheTokens(buckets: TokenBuckets): number {
+  return buckets.input + buckets.output;
+}
+
+/**
+ * The figure rows are ranked and sized by: provider-reported total tokens.
+ *
+ * Kept as a single named helper so every tab ranks by the same measure.
+ */
+export function rankTokens(buckets: TokenBuckets): number {
+  return buckets.totalTokens;
 }
 
 export function emptyBuckets(): TokenBuckets {
@@ -19,7 +37,6 @@ export function emptyBuckets(): TokenBuckets {
     cacheRead: 0,
     cacheWrite: 0,
     totalTokens: 0,
-    costTotal: 0,
   };
 }
 
@@ -30,8 +47,21 @@ export function addBuckets(a: TokenBuckets, b: TokenBuckets): TokenBuckets {
     cacheRead: a.cacheRead + b.cacheRead,
     cacheWrite: a.cacheWrite + b.cacheWrite,
     totalTokens: a.totalTokens + b.totalTokens,
-    costTotal: a.costTotal + b.costTotal,
   };
+}
+
+/**
+ * Local calendar date (`YYYY-MM-DD`) for a timestamp.
+ *
+ * Days are bucketed in the machine's local timezone so "today" matches the
+ * user's day, not UTC. Uses `Date` local getters rather than
+ * `toISOString().slice(0, 10)`, which would bucket by UTC.
+ */
+export function localDayKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 /** Per-model usage row */
@@ -53,6 +83,22 @@ export interface SessionUsage {
   messageCount: number;
 }
 
+/** Per-provider usage row within a single day */
+export interface DayProviderUsage {
+  provider: string;
+  tokens: TokenBuckets;
+  messageCount: number;
+}
+
+/** Usage aggregated for one local calendar day */
+export interface DayUsage {
+  /** Local calendar date as `YYYY-MM-DD`. */
+  date: string;
+  tokens: TokenBuckets;
+  messageCount: number;
+  byProvider: DayProviderUsage[];
+}
+
 /** Full aggregation result */
 export interface AggregateResult {
   totals: TokenBuckets;
@@ -63,6 +109,8 @@ export interface AggregateResult {
     messageCount: number;
   }>;
   bySession: SessionUsage[];
+  /** Per-local-calendar-day usage, newest day first. */
+  byDay: DayUsage[];
   sessionCount: number;
   messageCount: number;
 }
@@ -78,18 +126,12 @@ interface AssistantMessageData {
     cacheRead?: number;
     cacheWrite?: number;
     totalTokens?: number;
-    cost?: {
-      input?: number;
-      output?: number;
-      cacheRead?: number;
-      cacheWrite?: number;
-      total?: number;
-    };
   };
 }
 
 interface SessionEntry {
   type: string;
+  timestamp?: string;
   message?: AssistantMessageData;
   name?: string;
 }
@@ -143,7 +185,11 @@ async function discoverSessionFiles(): Promise<string[]> {
  */
 async function parseSessionFile(
   filePath: string,
-): Promise<{ session: SessionUsage; models: Map<string, ModelUsage> } | null> {
+): Promise<{
+  session: SessionUsage;
+  models: Map<string, ModelUsage>;
+  days: Map<string, DayUsage>;
+} | null> {
   let content: string;
   try {
     content = await readFile(filePath, "utf8");
@@ -156,6 +202,7 @@ async function parseSessionFile(
 
   const sessionTokens = emptyBuckets();
   const models = new Map<string, ModelUsage>();
+  const days = new Map<string, DayUsage>();
   let sessionId = "";
   let cwd = "";
   let name: string | undefined;
@@ -203,7 +250,6 @@ async function parseSessionFile(
         cacheRead: usage.cacheRead ?? 0,
         cacheWrite: usage.cacheWrite ?? 0,
         totalTokens: usage.totalTokens ?? 0,
-        costTotal: usage.cost?.total ?? 0,
       };
 
       // Accumulate into session totals
@@ -212,7 +258,6 @@ async function parseSessionFile(
       sessionTokens.cacheRead += buckets.cacheRead;
       sessionTokens.cacheWrite += buckets.cacheWrite;
       sessionTokens.totalTokens += buckets.totalTokens;
-      sessionTokens.costTotal += buckets.costTotal;
       messageCount++;
 
       // Accumulate per-model
@@ -227,6 +272,37 @@ async function parseSessionFile(
         models.set(modelKey, {
           provider,
           model,
+          tokens: { ...buckets },
+          messageCount: 1,
+        });
+      }
+
+      // Accumulate per local calendar day (and per provider within that day).
+      // Day attribution uses the entry timestamp; entries without one are
+      // attributed to the session date, which is stable regardless of when the
+      // scan runs.
+      const dayKey = localDayKey(
+        entry.timestamp ? new Date(entry.timestamp) : (created ?? new Date(0)),
+      );
+      let day = days.get(dayKey);
+      if (!day) {
+        day = {
+          date: dayKey,
+          tokens: emptyBuckets(),
+          messageCount: 0,
+          byProvider: [],
+        };
+        days.set(dayKey, day);
+      }
+      day.tokens = addBuckets(day.tokens, buckets);
+      day.messageCount++;
+      const dayProvider = day.byProvider.find((p) => p.provider === provider);
+      if (dayProvider) {
+        dayProvider.tokens = addBuckets(dayProvider.tokens, buckets);
+        dayProvider.messageCount++;
+      } else {
+        day.byProvider.push({
+          provider,
           tokens: { ...buckets },
           messageCount: 1,
         });
@@ -258,6 +334,7 @@ async function parseSessionFile(
       messageCount,
     },
     models,
+    days,
   };
 }
 
@@ -280,6 +357,7 @@ export async function aggregateAllSessions(options?: {
     { tokens: TokenBuckets; messageCount: number }
   >();
   const sessions: SessionUsage[] = [];
+  const byDayMap = new Map<string, DayUsage>();
   let totalMessages = 0;
 
   // Parse files in parallel (bounded concurrency)
@@ -290,7 +368,7 @@ export async function aggregateAllSessions(options?: {
 
     for (const result of results) {
       if (!result) continue;
-      const { session, models } = result;
+      const { session, models, days } = result;
 
       // Filter by cwd if specified
       if (options?.cwd && session.cwd !== options.cwd) continue;
@@ -307,7 +385,6 @@ export async function aggregateAllSessions(options?: {
       totals.cacheRead += session.tokens.cacheRead;
       totals.cacheWrite += session.tokens.cacheWrite;
       totals.totalTokens += session.tokens.totalTokens;
-      totals.costTotal += session.tokens.costTotal;
       totalMessages += session.messageCount;
 
       // Accumulate per-model
@@ -335,21 +412,67 @@ export async function aggregateAllSessions(options?: {
           });
         }
       }
+      // Accumulate per-day totals
+      for (const [dayKey, day] of days) {
+        const existingDay = byDayMap.get(dayKey);
+        if (!existingDay) {
+          byDayMap.set(dayKey, {
+            date: day.date,
+            tokens: { ...day.tokens },
+            messageCount: day.messageCount,
+            byProvider: day.byProvider.map((p) => ({
+              provider: p.provider,
+              tokens: { ...p.tokens },
+              messageCount: p.messageCount,
+            })),
+          });
+          continue;
+        }
+
+        existingDay.tokens = addBuckets(existingDay.tokens, day.tokens);
+        existingDay.messageCount += day.messageCount;
+        for (const dayProvider of day.byProvider) {
+          const existingProvider = existingDay.byProvider.find(
+            (p) => p.provider === dayProvider.provider,
+          );
+          if (existingProvider) {
+            existingProvider.tokens = addBuckets(
+              existingProvider.tokens,
+              dayProvider.tokens,
+            );
+            existingProvider.messageCount += dayProvider.messageCount;
+          } else {
+            existingDay.byProvider.push({
+              provider: dayProvider.provider,
+              tokens: { ...dayProvider.tokens },
+              messageCount: dayProvider.messageCount,
+            });
+          }
+        }
+      }
     }
   }
 
-  // Sort sessions by cost descending
-  sessions.sort((a, b) => b.tokens.costTotal - a.tokens.costTotal);
+  // Sort sessions by tokens descending
+  sessions.sort((a, b) => rankTokens(b.tokens) - rankTokens(a.tokens));
 
-  // Sort models by cost descending
+  // Sort days newest first, and each day's providers by tokens descending
+  const byDay = Array.from(byDayMap.values()).sort((a, b) =>
+    b.date.localeCompare(a.date),
+  );
+  for (const day of byDay) {
+    day.byProvider.sort((a, b) => rankTokens(b.tokens) - rankTokens(a.tokens));
+  }
+
+  // Sort models by tokens descending
   const byModel = Array.from(byModelMap.values()).sort(
-    (a, b) => b.tokens.costTotal - a.tokens.costTotal,
+    (a, b) => rankTokens(b.tokens) - rankTokens(a.tokens),
   );
 
-  // Sort providers by cost descending
+  // Sort providers by tokens descending
   const byProvider = Array.from(byProviderMap.entries())
     .map(([provider, data]) => ({ provider, ...data }))
-    .sort((a, b) => b.tokens.costTotal - a.tokens.costTotal);
+    .sort((a, b) => rankTokens(b.tokens) - rankTokens(a.tokens));
 
   // Apply limit
   const limit = options?.limit;
@@ -359,6 +482,7 @@ export async function aggregateAllSessions(options?: {
     totals,
     byModel,
     byProvider,
+    byDay,
     bySession: limitedSessions,
     sessionCount: sessions.length,
     messageCount: totalMessages,
@@ -376,16 +500,6 @@ export function formatNumber(n: number): string {
 }
 
 /**
- * Format cost as USD string.
- */
-export function formatCost(cost: number): string {
-  if (cost === 0) return "$0.00";
-  if (cost < 0.01) return "<$0.01";
-  if (cost >= 1000) return `$${(cost / 1000).toFixed(1)}K`;
-  return `$${cost.toFixed(2)}`;
-}
-
-/**
  * Format token buckets as a compact summary line.
  */
 export function formatTokenSummary(tokens: TokenBuckets): string {
@@ -394,6 +508,5 @@ export function formatTokenSummary(tokens: TokenBuckets): string {
   if (tokens.output > 0) parts.push(`${formatNumber(tokens.output)} out`);
   if (tokens.cacheRead > 0)
     parts.push(`${formatNumber(tokens.cacheRead)} cached`);
-  if (tokens.costTotal > 0) parts.push(formatCost(tokens.costTotal));
   return parts.join(" · ");
 }

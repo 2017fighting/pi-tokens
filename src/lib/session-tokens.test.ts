@@ -2,9 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   addBuckets,
   emptyBuckets,
-  formatCost,
   formatNumber,
   formatTokenSummary,
+  nonCacheTokens,
+  rankTokens,
   type TokenBuckets,
 } from "./session-tokens.js";
 
@@ -16,7 +17,6 @@ describe("emptyBuckets", () => {
     expect(b.cacheRead).toBe(0);
     expect(b.cacheWrite).toBe(0);
     expect(b.totalTokens).toBe(0);
-    expect(b.costTotal).toBe(0);
   });
 });
 
@@ -28,7 +28,6 @@ describe("addBuckets", () => {
       cacheRead: 50,
       cacheWrite: 25,
       totalTokens: 375,
-      costTotal: 0.05,
     };
     const b: TokenBuckets = {
       input: 300,
@@ -36,7 +35,6 @@ describe("addBuckets", () => {
       cacheRead: 100,
       cacheWrite: 75,
       totalTokens: 875,
-      costTotal: 0.15,
     };
     const result = addBuckets(a, b);
     expect(result.input).toBe(400);
@@ -44,7 +42,6 @@ describe("addBuckets", () => {
     expect(result.cacheRead).toBe(150);
     expect(result.cacheWrite).toBe(100);
     expect(result.totalTokens).toBe(1250);
-    expect(result.costTotal).toBe(0.2);
   });
 
   it("handles empty buckets", () => {
@@ -55,7 +52,6 @@ describe("addBuckets", () => {
       cacheRead: 0,
       cacheWrite: 0,
       totalTokens: 100,
-      costTotal: 0.01,
     };
     const result = addBuckets(a, b);
     expect(result).toEqual(b);
@@ -80,20 +76,40 @@ describe("formatNumber", () => {
   });
 });
 
-describe("formatCost", () => {
-  it("formats zero", () => {
-    expect(formatCost(0)).toBe("$0.00");
+describe("nonCacheTokens", () => {
+  it("excludes cache reads and writes", () => {
+    const tokens: TokenBuckets = {
+      input: 1000,
+      output: 500,
+      cacheRead: 9_000_000,
+      cacheWrite: 40_000,
+      totalTokens: 9_041_500,
+    };
+    expect(nonCacheTokens(tokens)).toBe(1500);
   });
 
-  it("formats small costs", () => {
-    expect(formatCost(0.005)).toBe("<$0.01");
-    expect(formatCost(0.01)).toBe("$0.01");
-    expect(formatCost(1.23)).toBe("$1.23");
+  it("ignores totalTokens", () => {
+    const tokens: TokenBuckets = {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 999,
+    };
+    expect(nonCacheTokens(tokens)).toBe(0);
   });
+});
 
-  it("formats large costs", () => {
-    expect(formatCost(1000)).toBe("$1.0K");
-    expect(formatCost(1234.56)).toBe("$1.2K");
+describe("rankTokens", () => {
+  it("ranks by provider-reported total tokens", () => {
+    const tokens: TokenBuckets = {
+      input: 1,
+      output: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 12345,
+    };
+    expect(rankTokens(tokens)).toBe(12345);
   });
 });
 
@@ -105,13 +121,11 @@ describe("formatTokenSummary", () => {
       cacheRead: 5000,
       cacheWrite: 2000,
       totalTokens: 67000,
-      costTotal: 0.45,
     };
     const result = formatTokenSummary(tokens);
     expect(result).toContain("50.0K in");
     expect(result).toContain("10.0K out");
     expect(result).toContain("5,000 cached");
-    expect(result).toContain("$0.45");
   });
 
   it("omits zero fields", () => {
@@ -121,7 +135,6 @@ describe("formatTokenSummary", () => {
       cacheRead: 0,
       cacheWrite: 0,
       totalTokens: 1500,
-      costTotal: 0,
     };
     const result = formatTokenSummary(tokens);
     expect(result).toContain("in");

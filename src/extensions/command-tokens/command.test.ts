@@ -67,7 +67,6 @@ function writeSession(): void {
           cacheRead: 0,
           cacheWrite: 0,
           totalTokens: 1_500,
-          cost: { total: 1.25 },
         },
       },
     }),
@@ -116,10 +115,16 @@ describe("registerTokensCommand", () => {
     expect(notify).toHaveBeenCalledTimes(1);
     const [message, level] = notify.mock.calls[0];
     expect(level).toBe("info");
-    expect(message).toContain("Token Usage: 1 sessions, 1 messages");
-    expect(message).toContain("Total: 1,500 tokens");
-    expect(message).toContain("$1.25");
-    expect(message).toContain("anthropic/claude-sonnet-4");
+    expect(message).toContain("Token Usage (this project): 1 sessions, 1 messages");
+    expect(message).toContain("Total: 1,500 tokens (1,500 non-cache)");
+    expect(message).not.toContain("$");
+    expect(message).toContain("By provider:");
+    expect(message).toContain("anthropic: 1,500 tokens (1,500 non-cache, 1 msgs)");
+    expect(message).toContain("By day (newest first):");
+    // The day key is local-time derived, so match the reporting shape rather
+    // than a hardcoded date, which would be timezone-dependent.
+    expect(message).toMatch(/\d{4}-\d{2}-\d{2}: 1,500 tokens \(1 msgs, running total 1,500\)/);
+    expect(message).toContain("anthropic/claude-sonnet-4: 1,500 tokens (1 msgs)");
   });
 
   it("opens the TUI view instead of notifying when a custom view is available", async () => {
@@ -159,7 +164,7 @@ describe("registerTokensCommand", () => {
 
     // The scan is async; let it settle, then assert the view has data.
     await vi.waitFor(() => {
-      expect(component.render(120).join("\n")).toContain("$1.25");
+      expect(component.render(120).join("\n")).toContain("1,500");
     });
     component.dispose();
   });

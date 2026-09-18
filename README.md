@@ -1,6 +1,6 @@
 # pi-tokens
 
-Cross-session token and cost usage for Pi, as a single `/tokens` command.
+Cross-session token usage for Pi, as a single `/tokens` command.
 
 Extracted from [@latentminds/pi-quotas](https://github.com/latentminds-ai/pi-quotas), where the command shipped alongside the provider quota features. This package contains the command and nothing else.
 
@@ -27,27 +27,49 @@ pi -e ./pi-tokens
 
 ## `/tokens`
 
-Scans every Pi session file under `~/.pi/agent/sessions/` and aggregates the token usage and cost recorded on assistant messages, then opens a bordered view with three tabs.
+Scans Pi session files under `~/.pi/agent/sessions/` and aggregates the token usage recorded on assistant messages.
+
+By default the view is **scoped to the current project** (sessions whose `cwd` matches). Press `a` for all projects and `p` to go back.
 
 | Key                | Action                          |
 | ------------------ | ------------------------------- |
-| `1` / `2` / `3`    | Overview / Models / Sessions    |
+| `1` / `2` / `3` / `4` | Overview / Models / Sessions / Daily |
 | `Tab` / `→` / `←`  | Cycle tabs                      |
+| `a` / `p`          | Scope: all projects / this project |
+| `v`                | Daily tab: toggle per-provider breakdown |
 | `j` / `k`, `↓`/ `↑` | Scroll                          |
 | `r`                | Re-scan sessions                |
 | `q` / `Esc`        | Close                           |
 
-**Overview** — session count, message count, input/output/cache-read/cache-write tokens, total tokens and total cost, followed by a per-provider cost breakdown with bars.
+Everything is reported in **tokens**. No currency figures are shown: `usage.cost` is the provider's list price for the model, not what a subscription plan actually bills, so it is not displayed.
 
-**Models** — cost per `provider/model`, sorted by cost, with a token summary line.
+**Overview** — session count, message count, input/output/cache-read/cache-write tokens, total tokens and non-cache tokens, followed by a per-provider token breakdown with bars.
 
-**Sessions** — per-session cost, name (or session id prefix) and date, sorted by cost, capped at the top sessions.
+**Models** — total tokens per `provider/model`, sorted by tokens, with an in/out/cached breakdown.
 
-When the TUI view is unavailable (non-interactive or RPC mode), the command prints the same totals through `ctx.ui.notify` instead.
+**Sessions** — per-session total tokens, name (or session id prefix) and local date, sorted by tokens, capped at the top sessions.
+
+**Daily** — tokens per local calendar day, newest first, with a bar and a cumulative `→ x` figure showing tokens used up to that day. The footer shows the day count and grand total. Press `v` to expand each day into its providers. Days are bucketed in **local time**, so "today" means your day rather than UTC.
+
+### Token figures
+
+Two figures appear side by side because they mean different things:
+
+- **Total tokens** — the provider-reported `totalTokens`, which is the sum of input, output, cache read and cache write. Rows are ranked and bars are sized by this figure.
+- **Non-cache tokens** — `input + output` only.
+
+On a cache-heavy workload total tokens is dominated by cache reads. In a representative 27k-message history, cache reads were **97.6%** of total tokens: a provider showing `828.9M` total had only `8.2M` non-cache. Showing both prevents the cache volume from being mistaken for new work.
+
+When the TUI view is unavailable (non-interactive or RPC mode), the command prints the same figures through `ctx.ui.notify` instead, scoped to the current project.
 
 ## Scope
 
-The scan covers all sessions of every project, not only the current working directory. Sessions without assistant messages carrying a `usage` block are skipped, and totals include only what each message recorded: a provider that reports no cost contributes tokens but `$0.00`.
+The scan includes every session file directly under a project directory (`sessions/<project>/<file>.jsonl`). Sessions without assistant messages carrying a `usage` block are skipped, and totals include only what each message recorded.
+
+Two things to be aware of:
+
+- **Session files nested deeper are not scanned.** Subagent runs stored under `sessions/<project>/<session-id>/<child-id>/run-0/session.jsonl` are currently outside the scan, so their cost is not included.
+- **Rows are ranked by total tokens**, which includes cache reads. Use the non-cache figure when you care about newly processed input and generated output rather than cache volume.
 
 ## Notes
 
